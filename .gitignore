@@ -21,6 +21,8 @@ local.properties
 .loadpath
 *.pyc
 *.exe
+*.txt
+*.rar
 
 # External tool builders
 .externalToolBuilders/

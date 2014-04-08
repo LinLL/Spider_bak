@@ -1,14 +1,19 @@
 __author__ = 'Luolin'
+#-*-coding:utf-8-*-
 
 import os
 import urllib2
+import urllib
 import re
 import sys
+import getopt
 from multiprocessing import Queue
 from multiprocessing import Pool
 from bs4 import BeautifulSoup
+from snownlp import SnowNLP
 import threading
 import time
+
 
 
 
@@ -85,6 +90,7 @@ class TySpider(Spider):
     is_end = False
 
 
+
     def __init__(self, thread_num = 5, folder="store", max_doc_num=10):
         self.thread_count = thread_num
         Spider.__init__(self, folder="stroe", max_doc_num=max_doc_num)
@@ -104,14 +110,16 @@ class TySpider(Spider):
         The method is for store article url
         """
         first_flag = True
-        while not self.doc_queue.full():
+        while not self.max_doc_num==0:
             print "loading...article's url"
             side = self.index_url+'/'+colum
             next_page = self.get_next_page(colum)
-            soup = BeautifulSoup(urllib2.urlopen("http://"+side).read())
+            try:
+                soup = BeautifulSoup(urllib2.urlopen("http://"+side).read())
+            except urllib2.HTTPError:
+                print "HTTPError,please cheak up your net"
             #soup.find('table',{'class':'tab-bbs-list tab-bbs-list-2'}).find('a',{'target':'_blank'})["href"]
             a_tags = soup.find('table',{'class':'tab-bbs-list tab-bbs-list-2'}).findAll('a',title=re.compile(r".*"))
-
             while 1:
                 for tag in a_tags:
                     url = tag['href']
@@ -121,7 +129,13 @@ class TySpider(Spider):
                         fp.write(url+'\r\n')
                         fp.write(title+'\r\n')
                     """
-                    self.doc_queue.put({(url,title):side})
+                    if not self.doc_queue.full():
+                        self.doc_queue.put({(url,title):side})
+                    else:
+                        print("urlstore_process exit")
+                        return True
+                    self.max_doc_num -= 1
+
                 if first_flag==True:
                     first_flag = False
                 else:
@@ -137,9 +151,10 @@ class TySpider(Spider):
                         fp.write("url:%s,title:%s"%(arti_url.encode("utf-8"),arti_title.encode("utf-8")))
                         fp.write("\r\n")
                 """
-                if not next_page or self.doc_queue.qsize()>self.max_doc_num:
+                if not next_page or self.max_doc_num==0:
                     #self.end()
-                    exit(1)
+                    print "exit success"
+                    return True
                 else:
                     next_page_url = self.index_url+next_page
                     side = next_page_url
@@ -148,15 +163,42 @@ class TySpider(Spider):
                     continue
 
     def search_word(self):
-        while 1:
+        """
+        from doc_queue search author article and store
+        """
+        while not self.doc_queue.empty():
             print "runing thread is %s" % threading.current_thread().getName()
             arti_url,arti_title = self.doc_queue.get().keys()[0]
             #get aritcle and store in file
-            data = BeautifulSoup(urllib2.urlopen("http://"+self.index_url+arti_url).read()).find("meta",{"name":"description"})["content"]
-            data = data.encode('utf-8')
-            fp = open("%s/%s.txt"%(self.folder,arti_title),"w")
-            fp.write(data)
+            try:
+                soup = BeautifulSoup(urllib2.urlopen("http://"+self.index_url+arti_url).read())
+            except urllib2.HTTPError:
+                self.max_doc_num+=1
+                continue
+            data = soup.find('meta',{'name':'author'})
+            data = data['content'].encode('utf-8')
+            author =  {'d':data}
+            author_enc = urllib.urlencode(author)[2:]
+            lead_div = soup.find('div',{"class":"atl-main"})
+            text = lead_div.find('div',{'class':'bbs-content clearfix'}).get_text().strip().encode('utf-8')+"\r\n"
+            text = unicode(text.decode('utf-8'))
+            s = SnowNLP(text)
+            fp = open("%s/%s.txt"%(self.folder,arti_title),"a")
+            fp.write("title:%s\r\n"%arti_title.encode("utf-8"))
+            fp.write("URL:%s\r\n"%arti_url.encode("utf-8"))
+            fp.write("data:%s"%text.encode('utf-8'))
+            fp.write("keywords:")
+            for key in s.keywords(5):
+                fp.write(key.encode('utf-8')+" ")
+            fp.flush()
             fp.close()
+            """store file
+            docs = soup.findAll('div',{'js_username':author_enc})
+            fp = open("%s/%s.txt"%(self.folder,arti_title),"a")
+            for div in docs:
+                fp.write( div.find('div',{'class':'bbs-content'}).get_text().strip().encode('utf-8')+"\r\n")
+            fp.close()
+            """
 
 
 
@@ -164,6 +206,7 @@ class TySpider(Spider):
         print "creating doc_url thread"
         t = threading.Thread(target=self.store_doc_url,args=(colum,))
         t.start()
+        time.sleep(3)
         print "successed"
         self.createThread(self.search_word)
 
@@ -173,9 +216,39 @@ class TySpider(Spider):
         print 'Please wait the thread end, and all done, have fun :)'
         sys.exit()
 
+def usage():
+    print u'\nSpider for TianYa BBS - 一个抓取 bbs.tianya.com 的文章的脚本。\n'
+    print u'帮助:'
+    print u'-h               打印帮助文本。'
+    print u'-n [num]         指定线程数，默认为10。'
+    print u'-c [num]         指定抓取文章最大数量，默认(0)不限制。'
+    print u'-o directory     指定图片存放目录。\n'
+    print u'包依赖:'
+    print u'BeautifulSoup    v4.3.2，snownlp     0.10.1'
+    sys.exit()
+
+def parses():
+    max_doc_num = 0
+    threading_num = 10
+    folder = ""
+    try:
+        opts,args = getopt.getopt(sys.argv[1:],"hc:n:l")
+    except getopt.GetoptError:
+        usage()
+    for o,v in  opts:
+        if o =="-h":
+            usage()
+        elif o =="-c":
+            max_doc_num = int(v)
+        elif o =="-n":
+            threading_num = int(v)
+        elif o == "-l":
+            folder = v
+    print threading_num,folder,max_doc_num
+    ts = TySpider(thread_num=threading_num,max_doc_num=max_doc_num)
+    ts.start(ts.columns[0])
 
 
 if __name__=="__main__":
-    ts = TySpider(max_doc_num=1000)
-    ts.start(ts.columns[0])
+    parses()
     #ts.createPool(target=ts.store_doc_url,iterable=ts.columns)
